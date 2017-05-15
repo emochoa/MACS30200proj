@@ -20,9 +20,14 @@ library(stringr)
 library(ISLR)
 library(haven)
 library(extrafont)
+library(SparseM)
 library(dplyr)
 library(car)
 library(lmtest)
+library(GGally)
+library(nortest)
+library(MVN)
+library(Amelia)
 
 options(digits = 3)
 set.seed(1337)
@@ -36,8 +41,6 @@ Estimate the following linear regression model of attitudes towards Joseph Biden
 
 $$Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3$$
 where $Y$ is the Joe Biden feeling thermometer, $X_1$ is age, $X_2$ is gender, and $X_3$ is education. Report the parameters and standard errors.
-
-> For this section, be sure to `na.omit()` the data frame (listwise deletion) before estimating the regression model. Otherwise you will get a plethora of errors for the diagnostic tests.
 
 ```{r read_data_fit_model}
 
@@ -55,7 +58,6 @@ lm_biden = lm(biden ~ age + Gender + educ, df)
 
 summary(lm_biden)
 
-# add key statistics
 biden_augment = df %>%
                 mutate(hat = hatvalues(lm_biden),
                 student = rstudent(lm_biden),
@@ -63,7 +65,7 @@ biden_augment = df %>%
 
 ```
 
-\beta_0 has a coefficient of `r summary(lm_biden)$coefficients[1,1]` and a standard error of `r summary(lm_biden)$coefficients[1,2]`; it is statistically significant at the p<.001 level.  \beta_1 (age) has a coefficient of `r summary(lm_biden)$coefficients[2,1]` and a standard error of `summary(lm_biden)$coefficients[2,2]`; it is not statistically significant (p=`r summary(lm_biden)$coefficients[2,4]`).  \beta_2 (female) has a coefficient of `r summary(lm_biden)$coefficients[3,1]` and a standard error of `r summary(lm_biden)$coefficients[3,2]; it is statistically significant at the p<.001 level.  \beta_3 (education) has a coefficient of `r summary(lm_biden)$coefficients[4,1]` and a standard error of `r summary(lm_biden)$coefficients[4,2]`; it is also statistically significant at the p<.001 level.
+The y-intercept has a coefficient of `r summary(lm_biden)$coefficients[1,1]` and a standard error of `r summary(lm_biden)$coefficients[1,2]`; it is statistically significant at the p<.001 level.  $X_1$ (age) has a coefficient of `r summary(lm_biden)$coefficients[2,1]` and a standard error of `r summary(lm_biden)$coefficients[2,2]`; it is not statistically significant (p=`r summary(lm_biden)$coefficients[2,4]`).  $X_2$ (female) has a coefficient of `r summary(lm_biden)$coefficients[3,1]` and a standard error of `r summary(lm_biden)$coefficients[3,2]`; it is statistically significant at the p<.001 level.  $X_3$ (education) has a coefficient of `r summary(lm_biden)$coefficients[4,1]` and a standard error of `r summary(lm_biden)$coefficients[4,2]`; it is also statistically significant at the p<.001 level.
 
 ## Testing for unsual and/or influential observations
 
@@ -348,103 +350,457 @@ To correct this, we could use a power or log transformation on one or more of th
 
 ## Heteroscedasticity
 
-We evaluate the plot of residuals versus predicted values in order to assess homoscedasticity:
+We evaluate the plot of residuals versus predicted warmth in order to assess homoscedasticity:
 
-``` {r homoscedasticity_plot}
+``` {r homoscedasticity_plot, message=FALSE}
 
 biden_augment %>%
   add_predictions(lm_biden) %>%
   add_residuals(lm_biden) %>%
   ggplot(aes(pred, resid)) +
-  geom_point(alpha = .2) +
+  geom_point(alpha = .2, color='darkturquoise') +
   geom_hline(yintercept = 0, linetype = 2) +
-  geom_quantile(method = "rqss", lambda = 5, quantiles = c(.05, .95)) +
+  geom_quantile(method = "rqss", lambda = 5, quantiles = c(.05, .95), color='deeppink', size=1) +
   labs(title = "Variance of Error Terms",
        x = "Predicted Warmth",
-       y = "Residuals")
+       y = "Residuals") +
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1))
 ```
 
-3.  Test for heteroscedasticity in the model. If present, explain what impact this could have on inference.
-4.  Test for multicollinearity. If present, propose if/how to solve the problem.
+The confidence bands do not resemble horizontal lines, indicating that the errors have non-constant variance.  This is particularly true for residuals with low-to-medium predicted warmth.  We conduct a Breusch-Pagan test to formally assess homoscedasticity:
+
+``` {r bp_test}
+
+bptest(lm_biden)
+```
+
+The null hypothesis for the Breusch-Pagan test is that the errors have constant variance.  With a p-value < .001, we reject the null hypothesis and find that the errors do exhibit heteroscedasticity.
+
+This has implications for inference because non-constant variance in the error terms can artificially augment or diminish the standard errors; this could then influence the t-statistics and accompanying p-values for different coefficients, perhaps leading us to falsely identify a variable as statistically significant when it is not, or, conversely, fail to identify a variable as statistically significant when it is indeed so.
+
+## Multicollinearity
+
+Finally, we test for multicollinarity with a correlation heatmap:
+
+``` {r correlation_heatmap}
+#Adapted slightly from code by bsoltoff
+cormat_heatmap = function(data){
+  # generate correlation matrix
+  cormat = round(cor(data), 2)
+  
+  # melt into a tidy table
+  get_upper_tri = function(cormat){
+    cormat[lower.tri(cormat)] = NA
+    return(cormat)
+  }
+  
+  upper_tri = get_upper_tri(cormat)
+  
+  # reorder matrix based on coefficient value
+  reorder_cormat = function(cormat){
+    # Use correlation between variables as distance
+    dd = as.dist((1-cormat)/2)
+    hc = hclust(dd)
+    cormat <-cormat[hc$order, hc$order]
+  }
+  
+  cormat = reorder_cormat(cormat)
+  upper_tri = get_upper_tri(cormat)
+  
+  # Melt the correlation matrix
+  melted_cormat = reshape2::melt(upper_tri, na.rm = TRUE)
+  
+  # Create a ggheatmap
+  ggheatmap = ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+    geom_tile(color = "white")+
+    scale_fill_gradient2(low = "darkturquoise", high = "deeppink", mid = "white", 
+                         midpoint = 0, limit = c(-1,1), space = "Lab", 
+                         name="Pearson\nCorrelation") +
+    theme_minimal()+ # minimal theme
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                     size = 12, hjust = 1))+
+    coord_fixed()
+  
+  # add correlation values to graph
+  ggheatmap + 
+    geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+    theme(
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      axis.ticks = element_blank(),
+      legend.position = "bottom",
+      plot.title = element_text(hjust = 0.5)) +
+    labs(title='Correlation Heatmap')
+}
+
+cormat_heatmap(select_if(df, is.numeric))
+```
+
+While we see that warmth score and Democrat are moderately negatively correlated with Republican, and that Democrat is moderately correlated with warmth score, no two independent variables are moderately or strongly correlated with one another.  This indicates that multicollinearity is not a problem in this model.
+
+We confirm this by calculating variance inflation factors (VIF) for the variables in the regression model:
+
+``` {r vif}
+
+vif(lm_biden)
+```
+
+The VIF statistics are all below 10, which confirms that multicollinearity is not a concern here.
 
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-Interaction terms (5 pts)
-=========================
+# Interaction terms
 
 Estimate the following linear regression model:
 
-*Y* = *β*<sub>0</sub> + *β*<sub>1</sub>*X*<sub>1</sub> + *β*<sub>2</sub>*X*<sub>2</sub> + *β*<sub>3</sub>*X*<sub>1</sub>*X*<sub>2</sub>
+$$ Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_1X_2$$
 
-where *Y* is the Joe Biden feeling thermometer, *X*<sub>1</sub> is age, and *X*<sub>2</sub> is education. Report the parameters and standard errors.
-
-> Again, employ listwise deletion in this section prior to estimating the regression model.
-
-1.  Evaluate the marginal effect of age on Joe Biden thermometer rating, conditional on education. Consider the magnitude and direction of the marginal effect, as well as its statistical significance.
-2.  Evaluate the marginal effect of education on Joe Biden thermometer rating, conditional on age. Consider the magnitude and direction of the marginal effect, as well as its statistical significance.
+where $Y$ is the Joe Biden feeling thermometer, $X_1$ is age, and $X_2$ is education. Report the parameters and standard errors.
 
 
+``` {r lm_interaction}
+lm_int_biden = lm(biden ~ age + educ + age*educ, df)
 
+summary(lm_int_biden)
+```
 
+The y-intercept has a coefficient of `r summary(lm_biden)$coefficients[1,1]` and a standard error of `r summary(lm_biden)$coefficients[1,2]`; it is statistically significant at the p<.001 level.  $X_1$ (age) has a coefficient of `r summary(lm_biden)$coefficients[2,1]` and a standard error of `r summary(lm_biden)$coefficients[2,2]`; it is statistically significant at the p<.001 level.  $X_2$ (education) has a coefficient of `r summary(lm_biden)$coefficients[3,1]` and a standard error of `r summary(lm_biden)$coefficients[3,2]`; it is statistically significant at the p<.05 level.  $X_1X_2$ has a coefficient of `r summary(lm_biden)$coefficients[4,1]` and a standard error of `r summary(lm_biden)$coefficients[4,2]`; it is statistically significant at the p<.001 level.
 
+### Marginal effect of age on warmth, conditional on education
 
+``` {r instant_effect}
 
+#Code by bsoltoff
+instant_effect = function(model, mod_var){
+  # get interaction term name
+  int.name = names(model$coefficients)[[which(str_detect(names(model$coefficients), ":"))]]
+  
+  marg_var = str_split(int.name, ":")[[1]][[which(str_split(int.name, ":")[[1]] != mod_var)]]
+  
+  # store coefficients and covariance matrix
+  beta.hat = coef(model)
+  cov = vcov(model)
+  
+  # possible set of values for mod_var
+  if(class(model)[[1]] == "lm"){
+    z <- seq(min(model$model[[mod_var]]), max(model$model[[mod_var]]))
+  } else {
+    z = seq(min(model$data[[mod_var]]), max(model$data[[mod_var]]))
+  }
+  
+  # calculate instantaneous effect
+  dy.dx = beta.hat[[marg_var]] + beta.hat[[int.name]] * z
+  
+  # calculate standard errors for instantaeous effect
+  se.dy.dx = sqrt(cov[marg_var, marg_var] +
+                     z^2 * cov[int.name, int.name] +
+                     2 * z * cov[marg_var, int.name])
+  
+  # combine into data frame
+  data_frame(z = z,
+             dy.dx = dy.dx,
+             se = se.dy.dx)
+}
+```
 
+``` {r marginal_age_1, echo=FALSE}
+instant_effect(lm_int_biden, "educ") %>%
+  ggplot(aes(z, dy.dx,
+             ymin = dy.dx - 1.96 * se,
+             ymax = dy.dx + 1.96 * se)) +
+  geom_hline(yintercept = 0, linetype = 2, color='darkturquoise', size=1) +
+  geom_pointrange(color='deeppink') +
+  labs(title = "Marginal Effect of Age on Warmth Conditional on Education",
+       x = "Education",
+       y = "Estimated marginal effect") + 
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1)) +
+  scale_x_continuous(limits = c(0,17), breaks = seq(0,17,by=2))
+```
 
+``` {r marginal_age_2, echo=FALSE}
+instant_effect(lm_int_biden, "educ") %>%
+  ggplot(aes(z, dy.dx)) +
+  geom_hline(yintercept = 0, color='darkturquoise', size=1) +
+  geom_line(color='deeppink', size=1) +
+  geom_line(aes(y = dy.dx - 1.96 * se), linetype = 2, color = 'deeppink', size=1) +
+  geom_line(aes(y = dy.dx + 1.96 * se), linetype = 2, color = 'deeppink', size=1) +
+  labs(title = "Marginal Effect of Age on Warmth Conditional on Education",
+       x = "Education",
+       y = "Estimated marginal effect") + 
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1)) +
+  scale_x_continuous(limits = c(0,17), breaks = seq(0,17,by=2))
+```
 
+We see that the 95% confidence interval for the marginal effect of age conditional on education includes zero for education values ranging from 13 to 16; below 13, it is strictly positive, and above 16, it is strictly negative.  The confidence interval is wide for values at the left tail of the distribution and much narrower for education values in the [12,14] range; this reflects the number of observations with values in those ranges:  There are few respondents with education level below 10, and the interval widens considerably as we move left from there.  There are many respondents with education level ranging from [12,14], so this tightens the interval; it widens as we move to 15 and above.
 
+The plot shows that as education increases from [0,14), age has a positive marginal effect on warmth.  For education = 14, age has no marginal effect on warmth.  As education increases from (14,17], age has a negative marginal effect on warmth.
 
+Next, we test whether the maringal effect of age conditional on education is statistically significant:
 
+``` {r marginal_age_3}
+age_marginal = coef(lm_int_biden)[["age"]] + coef(lm_int_biden)[["age:educ"]]
 
+linearHypothesis(lm_int_biden, "age + age:educ")
+```
 
+We find that the marginal effect of age conditional on education (`r age_marginal`) is statistically significant at the p<.001 level.
 
+### Marginal effect of education on warmth, conditional on age
 
+``` {r marginal_education_1, echo=FALSE}
+instant_effect(lm_int_biden, "age") %>%
+  ggplot(aes(z, dy.dx,
+             ymin = dy.dx - 1.96 * se,
+             ymax = dy.dx + 1.96 * se)) +
+  geom_hline(yintercept = 0, linetype = 2, color='darkturquoise', size=1) +
+  geom_pointrange(color='deeppink') +
+  labs(title = "Marginal Effect of Education on Warmth Conditional on Age",
+       x = "Age",
+       y = "Estimated marginal effect") + 
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1)) +
+  scale_x_continuous(limits = c(18,93), breaks = seq(20,95,by=10))
+```
 
+``` {r marginal_education_2, echo=FALSE}
+instant_effect(lm_int_biden, "age") %>%
+  ggplot(aes(z, dy.dx)) +
+  geom_hline(yintercept = 0, color='darkturquoise', size=1) +
+  geom_line(color='deeppink', size=1) +
+  geom_line(aes(y = dy.dx - 1.96 * se), linetype = 2, color = 'deeppink', size=1) +
+  geom_line(aes(y = dy.dx + 1.96 * se), linetype = 2, color = 'deeppink', size=1) +
+  labs(title = "Marginal Effect of Education on Warmth Conditional on Age",
+       x = "Age",
+       y = "Estimated marginal effect") + 
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1)) +
+  scale_x_continuous(limits = c(18,93), breaks = seq(20,95,by=10))
+```
 
+We see that the 95% confidence interval is wider at the tails and narrower between [45,65]; this is because there are fewer respondents with ages at the tails of the age distribution and more with ages toward the center of the distribution.  The interval includes zero for ages below 45.  As age increases, the marginal effect of education on warmth conditional on age decreases.
 
+``` {r marginal_education_3}
+education_marginal = coef(lm_int_biden)[["educ"]] + coef(lm_int_biden)[["age:educ"]]
 
+linearHypothesis(lm_int_biden, "educ + age:educ")
+```
 
+We find that the marginal effect of education on warmth conditional on age (`r education_marginal`) is statistically significant at the p<.05 level.
 
+# Missing data
 
-
-Missing data (5 pts)
-====================
 
 Estimate the following linear regression model of attitudes towards Joseph Biden:
 
-*Y* = *β*<sub>0</sub> + *β*<sub>1</sub>*X*<sub>1</sub> + *β*<sub>2</sub>*X*<sub>2</sub> + *β*<sub>3</sub>*X*<sub>3</sub>
+$$Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3$$
 
-where *Y* is the Joe Biden feeling thermometer, *X*<sub>1</sub> is age, *X*<sub>2</sub> is gender, and *X*<sub>3</sub> is education. This time, use multiple imputation to account for the missingness in the data. Consider the multivariate normality assumption and transform any variables as you see fit for the imputation stage. Calculate appropriate estimates of the parameters and the standard errors and explain how the results differ from the original, non-imputed model.
+where $Y$ is the Joe Biden feeling thermometer, $X_1$ is age, $X_2$ is gender, and $X_3$ is education. This time, use multiple imputation to account for the missingness in the data. Consider the multivariate normality assumption and transform any variables as you see fit for the imputation stage. Calculate appropriate estimates of the parameters and the standard errors and explain how the results differ from the original, non-imputed model.
 
-Submission instructions
-=======================
 
-Submit your work in the `PS3` folder in your project repo.
+``` {r read_data_missing}
 
-If you use R
-------------
+df2 = read.csv('biden.csv')
 
-Submit your assignment as a single [R Markdown document](http://rmarkdown.rstudio.com/). R Markdown is similar to Juptyer Notebooks and compiles all your code, output, and written analysis in a single reproducible file.
+biden_subset_vars = df2 %>%
+                    select(biden, age, educ)
+```
 
-If you use Python
------------------
+We begin by visually assessing normality with a scatterplot matrix:
 
-Either:
+``` {r scatterplot_matrix, warning=FALSE, echo=FALSE}
 
-1.  Submit your assignment following the same procedures as required by Dr. Evans. Submit a Python script containing all your code, plus a LaTeX generated PDF document with your results and substantive analysis.
-2.  Submit your assignment as a single Jupyter Notebook with your code, output, and written analysis compiled there.
+GGally::ggpairs(biden_subset_vars)
+```
+
+The density plots indicate that the continuous variables are not normally distributed.  We continue by assessing normality formally with the Anderson-Darling test:
+
+``` {r a-dar_1}
+
+ad.test(biden_subset_vars$biden)
+```
+
+``` {r a-dar_2}
+
+ad.test(biden_subset_vars$age)
+```
+
+``` {r a-dar_3}
+
+ad.test(biden_subset_vars$educ)
+```
+
+For all three continuous variables, the Anderson-Darling test rejects the null hypothesis that the data are distributed normally.  The test results imply that multivariate normality is out of the question; nevertheless, for the sake of completeness, we continue with formal multivariate normality tests:
+
+``` {r mardia}
+
+mardiaTest(biden_subset_vars)
+```
+
+``` {r hz}
+
+hzTest(biden_subset_vars)
+```
+
+Both the Mardia and Henze-Zirkler tests indicate that the data are not multivariate normal.
+
+We proceed by transforming the variables in an effort to impose a normal distribution.  First, we take the log; then, we take the square root:
+
+``` {r scatterplot_matrix_log, warning=FALSE, echo=FALSE}
+
+GGally::ggpairs(log(biden_subset_vars + 1))
+```
+
+``` {r scatterplot_matrix_sqrt, warning=FALSE, echo=FALSE}
+
+GGally::ggpairs(as.data.frame(biden_subset_vars**(1/2)))
+```
+
+We decide that while far from perfect, the best transformations (of the ones we tried) are as follows:
+
+—Biden feeling thermometer:  ln(biden)
+
+—Age:  sqrt(age)
+
+—Education:  sqrt(education)
+
+We transform the variables thus:
+
+``` {r transform_biden}
+
+df2_transformed = df2 %>% mutate(biden = log(biden + 1),
+                                 age = sqrt(age),
+                                 edu = sqrt(educ))
+
+transformed_subset_vars = df2_transformed %>%
+                             select(biden, age, edu)
+```
+
+``` {r scatterplot_matrix_transformed, warning=FALSE, echo=FALSE}
+
+GGally::ggpairs(transformed_subset_vars)
+```
+
+``` {r mardia2}
+
+mardiaTest(transformed_subset_vars)
+```
+
+``` {r hz2}
+
+hzTest(transformed_subset_vars)
+```
+
+Despite our efforts, the data are still not multivariate normal.  Nevertheless, we press on.  We estimate three models:
+
+—One with listwise deletion
+
+—A second with full imputation
+
+—A third with imputation based on the transformed variables
+
+``` {r estimate_three_models}
+
+lm_listwise = lm(biden ~ age + female + educ, df2)
+amelia_full = amelia(df2, noms = c('female','dem','rep'), m=5, p2s=0)
+amelia_transformed = amelia(df2, logs = c('biden'), sqrt = c('age','educ'), noms = c('female','dem','rep'), m=5, p2s=0)
+
+#Code by bsoltoff
+models_imp_full = data_frame(data = amelia_full$imputations) %>%
+  mutate(model = map(data, ~ lm(biden ~ age +
+                                  female + educ,
+                                data = .x)),
+         coef = map(model, tidy)) %>%
+  unnest(coef, .id = "id")
+models_imp_full
+
+models_imp_transformed = data_frame(data = amelia_transformed$imputations) %>%
+  mutate(model = map(data, ~ lm(biden ~ age +
+                                  female + educ,
+                                data = .x)),
+         coef = map(model, tidy)) %>%
+  unnest(coef, .id = "id")
+models_imp_transformed
+```
+
+``` {r plus_function}
+#Code by bsoltoff
+mi.meld.plus <- function(df_tidy){
+  # transform data into appropriate matrix shape
+  coef.out <- df_tidy %>%
+    select(id:estimate) %>%
+    spread(term, estimate) %>%
+    select(-id)
+  
+  se.out <- df_tidy %>%
+    select(id, term, std.error) %>%
+    spread(term, std.error) %>%
+    select(-id)
+  
+  combined.results <- mi.meld(q = coef.out, se = se.out)
+  
+  data_frame(term = colnames(combined.results$q.mi),
+             estimate.mi = combined.results$q.mi[1, ],
+             std.error.mi = combined.results$se.mi[1, ])
+}
+```
+
+
+```{r compare_table, message=FALSE}
+tidy(lm_listwise) %>%
+  left_join(mi.meld.plus(models_imp_full)) %>%
+  select(-statistic, -p.value)
+```
+
+```{r compare_table2, message=FALSE}
+tidy(lm_listwise) %>%
+  left_join(mi.meld.plus(models_imp_transformed)) %>%
+  select(-statistic, -p.value)
+```
+
+
+``` {r compare_viz}
+#Code by bsoltoff
+bind_rows(orig = tidy(lm_listwise),
+          full_imp = mi.meld.plus(models_imp_full) %>%
+            rename(estimate = estimate.mi,
+                   std.error = std.error.mi),
+          trans_imp = mi.meld.plus(models_imp_transformed) %>%
+            rename(estimate = estimate.mi,
+                   std.error = std.error.mi),
+          .id = "method") %>%
+  mutate(method = factor(method, levels = c("orig", "full_imp", "trans_imp"),
+                         labels = c("Listwise deletion", "Full imputation",
+                                    "Transformed imputation")),
+         term = factor(term, levels = c("(Intercept)", "age",
+                                        "female", "educ"),
+                       labels = c("Intercept", "sqrt(Age)", "Female",
+                                  "sqrt(Education)"))) %>%
+  filter(term != "Intercept") %>%
+  ggplot(aes(fct_rev(term), estimate, color = fct_rev(method),
+             ymin = estimate - 1.96 * std.error,
+             ymax = estimate + 1.96 * std.error)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_pointrange(position = position_dodge(.75)) +
+  coord_flip() +
+  scale_color_manual(guide = guide_legend(reverse = TRUE), values=c('deeppink','darkturquoise','orange')) +
+  labs(title = "Comparing Regression Results",
+       subtitle = "Omitting Intercept from Plot",
+       x = NULL,
+       y = "Estimated parameter",
+       color = NULL) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1))
+```
+
+By comparing the parameter estimates across the different methods, we can see that the confidence intervals for the parameters overlap.  This suggests that there may be little substantive or statistically significant difference among methods.  Notably, the transformed parameters for female and education aremuch wider than those for listwise deletion or full imputation.
