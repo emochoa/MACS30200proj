@@ -1,0 +1,450 @@
+---
+title: "MACS 30200 PS3"
+author: "Erin M. Ochoa"
+
+date: "2017 May 15"
+output:
+  github_document:
+    toc: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+
+library(tidyverse)
+library(forcats)
+library(broom)
+library(modelr)
+library(gridExtra)
+library(stringr)
+library(ISLR)
+library(haven)
+library(extrafont)
+library(dplyr)
+library(car)
+library(lmtest)
+
+options(digits = 3)
+set.seed(1337)
+theme_set(theme_minimal())
+```
+
+# Regression diagnostics
+
+
+Estimate the following linear regression model of attitudes towards Joseph Biden:
+
+$$Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3$$
+where $Y$ is the Joe Biden feeling thermometer, $X_1$ is age, $X_2$ is gender, and $X_3$ is education. Report the parameters and standard errors.
+
+> For this section, be sure to `na.omit()` the data frame (listwise deletion) before estimating the regression model. Otherwise you will get a plethora of errors for the diagnostic tests.
+
+```{r read_data_fit_model}
+
+df = read.csv('biden.csv')
+
+df$Gender = factor(df$female, labels=c('Man','Woman'))
+
+df$Party[df$dem == 1] = 'Democrat'
+df$Party[df$dem == 0 & df$rep == 0] = 'No Affiliation'
+df$Party[df$rep == 1] = 'Republican'
+
+df = na.omit(df)
+
+lm_biden = lm(biden ~ age + Gender + educ, df)
+
+summary(lm_biden)
+
+# add key statistics
+biden_augment = df %>%
+                mutate(hat = hatvalues(lm_biden),
+                student = rstudent(lm_biden),
+                cooksd = cooks.distance(lm_biden))
+
+```
+
+\beta_0 has a coefficient of `r summary(lm_biden)$coefficients[1,1]` and a standard error of `r summary(lm_biden)$coefficients[1,2]`; it is statistically significant at the p<.001 level.  \beta_1 (age) has a coefficient of `r summary(lm_biden)$coefficients[2,1]` and a standard error of `summary(lm_biden)$coefficients[2,2]`; it is not statistically significant (p=`r summary(lm_biden)$coefficients[2,4]`).  \beta_2 (female) has a coefficient of `r summary(lm_biden)$coefficients[3,1]` and a standard error of `r summary(lm_biden)$coefficients[3,2]; it is statistically significant at the p<.001 level.  \beta_3 (education) has a coefficient of `r summary(lm_biden)$coefficients[4,1]` and a standard error of `r summary(lm_biden)$coefficients[4,2]`; it is also statistically significant at the p<.001 level.
+
+## Testing for unsual and/or influential observations
+
+### High-leverage observations
+
+First, we plot high-leverage observations (those with a leverage value greater than twice the average leverage value):
+
+``` {r high-lev_obs, echo=FALSE}
+
+biden_lev = biden_augment %>%
+            filter(hat > 2 * mean(hat))
+
+ggplot(biden_lev, mapping = aes(x = age, y = hat)) +
+       geom_point(alpha=.8, aes(shape = Gender, color = biden, size = educ)) + 
+       scale_color_continuous(name = "Biden Feeling Thermometer") +
+       scale_size_continuous(name = "Years of Education") +
+       labs(title = "Biden Feeling Thermometer by Age, Gender, & Education:\nHigh-Leverage Observations",
+            subtitle = 'N = 74',
+            x = "Respondent Age",
+            y = "Hat Value") +
+       theme(plot.title = element_text(hjust = 0.5),
+             plot.subtitle = element_text(hjust = 0.5),
+             panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1))
+```
+
+We can see that most of the high-leverage observations are of higher feeling-thermometer values from older respondents of both genders and with more years of schooling.  The two points with the highest leverage values, however, are from respodents with lower levels of education.
+
+### Discrepant residuals
+
+Next, we plot discrepant residuals (those with an absolute value greater than 2):
+
+``` {r student_resids, echo=FALSE}
+biden_resid = biden_augment %>%
+              filter(abs(student) > 2)
+
+ggplot(biden_resid, mapping = aes(x = age, y = abs(student))) +
+       geom_point(alpha=.8, aes(shape = Gender, color = biden, size = educ)) + 
+       scale_color_continuous(name = "Biden Feeling Thermometer") +
+       scale_size_continuous(name = "Years of Education") +
+       labs(title = "Biden Feeling Thermometer by Age, Gender, & Education:\nDiscrepant Residuals",
+            subtitle = 'N = 82',
+            x = "Respondent Age",
+            y = "Studentized Residual Absolute Value") +
+       theme(plot.title = element_text(hjust = 0.5),
+             plot.subtitle = element_text(hjust = 0.5),
+             panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1))
+```
+
+We see that most discrepant residuals are from respondents with higher levels of education, but that they vary in age and gender.  Interestingly, those with lower absolute residual values (relative to the discrepant residuals) tend to be women with higher scores for Biden warmth, while those with average and high residual values (again, relative to the discrepant residuals) tend to be men and women, respectively, with low Biden warmth scores.
+
+### Influential observations
+
+We now plot influential observations (those with high Cook's D values):
+
+``` {r influential_observations, echo=FALSE}
+biden_infl = biden_augment %>%
+             filter(cooksd > 4 / (nrow(.) - (length(coef(lm_biden)) - 1) - 1))
+
+ggplot(biden_infl, mapping = aes(x = age, y = cooksd)) +
+       geom_point(alpha=.7, aes(shape = Gender, color = biden, size = educ)) + 
+       scale_color_continuous(name = "Biden Feeling Thermometer") +
+       scale_size_continuous(name = "Years of Education") +
+       labs(title = "Biden Feeling Thermometer by Age, Gender, & Education:\nHigh-Influence Observations",
+            subtitle = 'N = 90',
+            x = "Respondent Age",
+            y = "Cook's D") +
+       theme(plot.title = element_text(hjust = 0.5),
+             plot.subtitle = element_text(hjust = 0.5),
+             panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1))
+```
+
+We can see that the respondents vary by age and gender, but that most have low values for Biden warmth and and moderate to high education.
+
+We plot all the unusual observations together, with residuals versus leverage and colored by Cook's D:
+
+``` {r bubble_plot, echo=FALSE}
+
+biden_outliers = biden_augment %>%
+                 filter(cooksd > 4 / (nrow(.) - (length(coef(lm_biden)) - 1) - 1) | abs(student) > 2 | hat > 2 * mean(hat))
+
+ggplot(biden_outliers, aes(hat, student)) +
+       geom_hline(yintercept = 0, linetype = 2) +
+       geom_point(aes(color = cooksd), size = 2.5, alpha = .7, position='jitter') +
+       scale_color_continuous(name="Cook's D") +
+       labs(title = 'Biden Feeling Thermometer by Age, Gender, & Education:\nUnusual Observations',
+            subtitle = 'N = 167',
+            x = "Leverage",
+            y = "Studentized Residual") +
+       theme(plot.title = element_text(hjust = 0.5),
+             plot.subtitle = element_text(hjust = 0.5),
+             panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1))
+```
+
+We see that the observations with mid-level Cook's D values are concentrated in the lower left corner of the plot; these points have low leverage and negative studentized residuals of high distance.
+
+Next, we create histograms of the outliers compared to all the observations:
+
+```{r outliers_age_gender_party, echo=FALSE}
+
+plotA = ggplot(df, aes(x=age, fill=Gender)) +
+               geom_histogram(binwidth = 5, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               ylab("Proportion of respondents") +
+               ggtitle("Observations by Respondent Age") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     legend.position = "none",
+                     axis.title.x=element_blank(),
+                     axis.text.x=element_blank(),
+                     axis.ticks.x=element_blank(),
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.125), breaks = seq(0, .125, by=.025))
+
+
+plotB = ggplot(biden_outliers, aes(x=age, fill=Gender)) +
+               geom_histogram(binwidth = 5, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               ggtitle("Outliers by Respondent Age") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     axis.title.x=element_blank(),
+                     axis.text.x=element_blank(),
+                     axis.ticks.x=element_blank(),
+                     axis.title.y=element_blank(),
+                     axis.text.y=element_blank(),
+                     axis.ticks.y=element_blank(),
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.125), breaks = seq(0, .125, by=.025)) + 
+               scale_fill_discrete(labels=c('M','W'))
+
+plotC = ggplot(df, aes(x=age, fill=Party)) +
+               geom_histogram(binwidth = 5, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               ylab("Proportion of respondents") +
+               xlab("Respondent Age") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     legend.position = "none",
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.1), breaks = seq(0, .1, by=.025)) +
+               scale_fill_manual(values=c('deeppink','darkturquoise','orange'))
+
+
+plotD = ggplot(biden_outliers, aes(x=age, fill=Party)) +
+               geom_histogram(binwidth = 5, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               xlab("Respondent Age") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     axis.title.y=element_blank(),
+                     axis.text.y=element_blank(),
+                     axis.ticks.y=element_blank(),
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.1), breaks = seq(0, .1, by=.025)) + 
+               scale_fill_manual(name = 'Party ', labels=c('D','I','R'),values=c('deeppink','darkturquoise','orange'))
+
+grid.arrange(plotA, plotB, plotC, plotD, ncol=2, nrow=2, widths=c(.48,.52))
+```
+
+We see that respondents of advanced age, particularly men, are overrepresented among the outliers.  Additionally, older respondents from all parties and middle-aged Republicans are overrepresented among the outliers.
+
+
+```{r outliers_biden_gender_party, warning=FALSE, echo=FALSE}
+
+plotE = ggplot(df, aes(x=biden, fill=Gender)) +
+               geom_histogram(binwidth = 10, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               ylab("Proportion of respondents") +
+               ggtitle("Observations by Respondent Age") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     legend.position = "none",
+                     axis.title.x=element_blank(),
+                     axis.text.x=element_blank(),
+                     axis.ticks.x=element_blank(),
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.125), breaks = seq(0, .125, by=.025))
+
+
+plotF = ggplot(biden_outliers, aes(x=biden, fill=Gender)) +
+               geom_histogram(binwidth = 10, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               ggtitle("Outliers by Respondent Age") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     axis.title.x=element_blank(),
+                     axis.text.x=element_blank(),
+                     axis.ticks.x=element_blank(),
+                     axis.title.y=element_blank(),
+                     axis.text.y=element_blank(),
+                     axis.ticks.y=element_blank(),
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.125), breaks = seq(0, .125, by=.025)) + 
+               scale_fill_discrete(labels=c('M','W'))
+
+plotG = ggplot(df, aes(x=biden, fill=Party)) +
+               geom_histogram(binwidth = 10, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               ylab("Proportion of respondents") +
+               xlab("Biden Warmth") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     legend.position = "none",
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.1), breaks = seq(0, .1, by=.025)) +
+               scale_fill_manual(values=c('deeppink','darkturquoise','orange'))
+
+
+plotH = ggplot(biden_outliers, aes(x=biden, fill=Party)) +
+               geom_histogram(binwidth = 10, position = 'dodge', aes(y = ..count../sum(..count..))) +
+               xlab("Biden Warmth") +
+               theme(plot.title = element_text(hjust = 0.5),
+                     panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+                     panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1),
+                     axis.title.y=element_blank(),
+                     axis.text.y=element_blank(),
+                     axis.ticks.y=element_blank(),
+                     legend.title = element_text(family='mono')) + 
+               scale_y_continuous(limits = c(0,.1), breaks = seq(0, .1, by=.025)) + 
+               scale_fill_manual(name = 'Party ', labels=c('D','I','R'),values=c('deeppink','darkturquoise','orange'))
+
+grid.arrange(plotE, plotF, plotG, plotH, ncol=2, nrow=2, widths=c(.48,.52))
+```
+
+We see that women with very low warmth scores and men with very high warmth scores are overrepresented among the outliers, as are Independents and Republicans with very low warmth scores.
+
+Next, we visualize the outliers alone, with Biden warmth versus respondent age, colored by party and shaped by gender:
+
+``` {r scatter_plot, echo=FALSE}
+
+
+ggplot(biden_outliers, aes(x=age, y=biden)) +
+       geom_point(aes(color=Party, shape=Gender), size = 3, position = 'jitter', alpha = .65) + 
+       xlab("Respondent Age") +
+       ylab("Biden Warmth") + 
+       ggtitle("Outliers by Respondent Age") +
+       theme(plot.title = element_text(hjust = 0.5),
+             panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1)) + 
+               #scale_y_continuous(limits = c(0,.1), breaks = seq(0, .1, by=.025)) + 
+       scale_color_manual(name = 'Party ', labels=c('D','I','R'),values=c('deeppink','darkturquoise','orange')) +
+       scale_shape(labels=c('M','W'))
+```
+
+As indicated by the histograms above, we see that mast of the outliers with very high warmth scores are senior respondents of both genders who identify as Democrats.  Most of the outliers with low warmth scores identify as Republicans or Independents, span the full range of ages, and vary by gender.
+
+### Next steps
+If we were moving forward with this research, we would run the model without the unusual observations and compare the results with those generated from the model that uses all the observations.  We would also consider adding political party to the model because it seems to have an effect on Biden warmth scores, at least among outliers and potentially among the rest of the observations.  Finally, we would consider adding one or more interaction terms to the model because older Democrats and older men are overrepresented among the outliers; adding such interaction terms could help explain the relationship between those variables.
+
+
+## Non-normally distributed errors
+
+First, we generate a Q–Q plot:
+
+``` {r qqplot, echo=FALSE}
+
+car::qqPlot(lm_biden)
+```
+
+Many of the observations, particularly those in the S-shape at the tail ends of the distribution, fall outside the confidence bands.  This indicates that the errors are not normally distributed.
+
+To confirm this, we generate a density plot of the studentized residuals:
+
+``` {r density_plot, echo=FALSE}
+
+augment(lm_biden, df) %>%
+  mutate(.student = rstudent(lm_biden)) %>%
+  ggplot(aes(.student)) +
+  geom_density(adjust = .5, color='deeppink',fill='deeppink',alpha = .5) +
+  labs(x = "Studentized residuals",
+       y = "Estimated density") + 
+  ggtitle("Density Plot of Studentized Residuals") +
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(linetype = "solid", color = "grey70", fill=NA, size=1.1))
+```
+
+The very heavy left skew and multiple peaks confirm that the residuals are not normally distributed.
+
+### Next steps
+
+To correct this, we could use a power or log transformation on one or more of the continuous variables (age and Biden warmth).  As with outliers above, we could also considering adding party and/or interaction terms to the model.
+
+
+## Heteroscedasticity
+
+We evaluate the plot of residuals versus predicted values in order to assess homoscedasticity:
+
+``` {r homoscedasticity_plot}
+
+biden_augment %>%
+  add_predictions(lm_biden) %>%
+  add_residuals(lm_biden) %>%
+  ggplot(aes(pred, resid)) +
+  geom_point(alpha = .2) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_quantile(method = "rqss", lambda = 5, quantiles = c(.05, .95)) +
+  labs(title = "Variance of Error Terms",
+       x = "Predicted Warmth",
+       y = "Residuals")
+```
+
+3.  Test for heteroscedasticity in the model. If present, explain what impact this could have on inference.
+4.  Test for multicollinearity. If present, propose if/how to solve the problem.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Interaction terms (5 pts)
+=========================
+
+Estimate the following linear regression model:
+
+*Y* = *β*<sub>0</sub> + *β*<sub>1</sub>*X*<sub>1</sub> + *β*<sub>2</sub>*X*<sub>2</sub> + *β*<sub>3</sub>*X*<sub>1</sub>*X*<sub>2</sub>
+
+where *Y* is the Joe Biden feeling thermometer, *X*<sub>1</sub> is age, and *X*<sub>2</sub> is education. Report the parameters and standard errors.
+
+> Again, employ listwise deletion in this section prior to estimating the regression model.
+
+1.  Evaluate the marginal effect of age on Joe Biden thermometer rating, conditional on education. Consider the magnitude and direction of the marginal effect, as well as its statistical significance.
+2.  Evaluate the marginal effect of education on Joe Biden thermometer rating, conditional on age. Consider the magnitude and direction of the marginal effect, as well as its statistical significance.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Missing data (5 pts)
+====================
+
+Estimate the following linear regression model of attitudes towards Joseph Biden:
+
+*Y* = *β*<sub>0</sub> + *β*<sub>1</sub>*X*<sub>1</sub> + *β*<sub>2</sub>*X*<sub>2</sub> + *β*<sub>3</sub>*X*<sub>3</sub>
+
+where *Y* is the Joe Biden feeling thermometer, *X*<sub>1</sub> is age, *X*<sub>2</sub> is gender, and *X*<sub>3</sub> is education. This time, use multiple imputation to account for the missingness in the data. Consider the multivariate normality assumption and transform any variables as you see fit for the imputation stage. Calculate appropriate estimates of the parameters and the standard errors and explain how the results differ from the original, non-imputed model.
+
+Submission instructions
+=======================
+
+Submit your work in the `PS3` folder in your project repo.
+
+If you use R
+------------
+
+Submit your assignment as a single [R Markdown document](http://rmarkdown.rstudio.com/). R Markdown is similar to Juptyer Notebooks and compiles all your code, output, and written analysis in a single reproducible file.
+
+If you use Python
+-----------------
+
+Either:
+
+1.  Submit your assignment following the same procedures as required by Dr. Evans. Submit a Python script containing all your code, plus a LaTeX generated PDF document with your results and substantive analysis.
+2.  Submit your assignment as a single Jupyter Notebook with your code, output, and written analysis compiled there.
